@@ -24,6 +24,7 @@ import {
   BriefcaseBusiness,
   CalendarDays,
   Check,
+  ChevronDown,
   CircleDollarSign,
   CreditCard,
   Download,
@@ -36,6 +37,7 @@ import {
   LineChart,
   LogOut,
   Menu,
+  Minus,
   Moon,
   MoreHorizontal,
   Plus,
@@ -280,6 +282,18 @@ function loadState() {
   }
 }
 
+function withNotification(state, message) {
+  const time = new Intl.DateTimeFormat('pt-BR', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date())
+
+  return {
+    ...state,
+    notifications: [`${time} - ${message}`, ...(state.notifications || [])].slice(0, 12),
+  }
+}
+
 function App() {
   const [isAuthed, setIsAuthed] = useState(() => localStorage.getItem('koala-authed') === 'true')
   const [data, setData] = useState(loadState)
@@ -287,8 +301,10 @@ function App() {
   const [theme, setTheme] = useState(() => localStorage.getItem('koala-theme') || 'dark')
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [modal, setModal] = useState(null)
+  const [pendingDelete, setPendingDelete] = useState(null)
   const [query, setQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('Todos')
+  const [selectedMonth, setSelectedMonth] = useState(getCurrentMonthKey)
 
   useEffect(() => {
     localStorage.setItem('koala-state', JSON.stringify(data))
@@ -299,7 +315,9 @@ function App() {
     localStorage.setItem('koala-theme', theme)
   }, [theme])
 
-  const analytics = useMemo(() => getAnalytics(data), [data])
+  const monthOptions = useMemo(() => getMonthOptions(data), [data])
+  const filteredData = useMemo(() => getDataForMonth(data, selectedMonth), [data, selectedMonth])
+  const analytics = useMemo(() => getAnalytics(filteredData), [filteredData])
 
   function authenticate(profile) {
     localStorage.setItem('koala-authed', 'true')
@@ -316,17 +334,35 @@ function App() {
   }
 
   function upsertExpense(expense) {
-    setData((current) => ({
-      ...current,
-      expenses: expense.id
-        ? current.expenses.map((item) => (item.id === expense.id ? expense : item))
-        : [{ ...expense, id: crypto.randomUUID() }, ...current.expenses],
-    }))
+    const isEdit = Boolean(expense.id)
+    const installments = Math.max(1, Number(expense.installments || 1))
+    setData((current) => {
+      if (isEdit) {
+        return {
+          ...withNotification(current, `Despesa atualizada: ${expense.title}`),
+          expenses: current.expenses.map((item) => (item.id === expense.id ? expense : item)),
+        }
+      }
+
+      const newExpenses =
+        installments > 1 ? createInstallmentExpenses(expense, installments) : [{ ...expense, id: crypto.randomUUID() }]
+
+      return {
+        ...withNotification(
+          current,
+          installments > 1
+            ? `Despesa parcelada adicionada: ${expense.title} (${installments} parcelas)`
+            : `Despesa adicionada: ${expense.title}`,
+        ),
+        expenses: [...newExpenses, ...current.expenses],
+      }
+    })
   }
 
   function upsertIncome(income) {
+    const isEdit = Boolean(income.id)
     setData((current) => ({
-      ...current,
+      ...withNotification(current, `Receita ${isEdit ? 'atualizada' : 'adicionada'}: ${income.title}`),
       incomes: income.id
         ? current.incomes.map((item) => (item.id === income.id ? income : item))
         : [{ ...income, id: crypto.randomUUID() }, ...current.incomes],
@@ -334,8 +370,9 @@ function App() {
   }
 
   function upsertGoal(goal) {
+    const isEdit = Boolean(goal.id)
     setData((current) => ({
-      ...current,
+      ...withNotification(current, `Meta ${isEdit ? 'atualizada' : 'adicionada'}: ${goal.name}`),
       goals: goal.id
         ? current.goals.map((item) => (item.id === goal.id ? goal : item))
         : [{ ...goal, id: crypto.randomUUID() }, ...current.goals],
@@ -343,22 +380,42 @@ function App() {
   }
 
   function remove(type, id) {
-    setData((current) => ({ ...current, [type]: current[type].filter((item) => item.id !== id) }))
+    const item = data[type].find((entry) => entry.id === id)
+    setPendingDelete({ type, id, item })
+  }
+
+  function confirmRemove() {
+    if (!pendingDelete) return
+    setData((current) => {
+      const { type, id } = pendingDelete
+      const item = current[type].find((entry) => entry.id === id)
+      const label = getDeleteLabel(type)
+      const name = item?.title || item?.name || 'registro'
+      return {
+        ...withNotification(current, `${label} excluída: ${name}`),
+        [type]: current[type].filter((entry) => entry.id !== id),
+      }
+    })
+    setPendingDelete(null)
   }
 
   function markPaid(id) {
-    setData((current) => ({
-      ...current,
-      expenses: current.expenses.map((expense) =>
-        expense.id === id ? { ...expense, paid: !expense.paid } : expense,
-      ),
-    }))
+    setData((current) => {
+      const target = current.expenses.find((expense) => expense.id === id)
+      const nextPaid = !target?.paid
+      return {
+        ...withNotification(current, `${target?.title || 'Despesa'} marcada como ${nextPaid ? 'paga' : 'em aberto'}`),
+        expenses: current.expenses.map((expense) =>
+          expense.id === id ? { ...expense, paid: nextPaid } : expense,
+        ),
+      }
+    })
   }
 
   function updateSalary(payload) {
     const month = new Date().toLocaleString('pt-BR', { month: 'short' })
     setData((current) => ({
-      ...current,
+      ...withNotification(current, `Salário do mês atualizado para ${currency.format(Number(payload.current))}`),
       salary: {
         ...current.salary,
         ...payload,
@@ -378,6 +435,26 @@ function App() {
       categories: [...current.categories, clean],
       budgets: { ...current.budgets, [clean]: 500 },
     }))
+  }
+
+  function removeCategory(name) {
+    const inUse = [...data.expenses, ...data.incomes].some((item) => item.category === name)
+    if (inUse) {
+      setData((current) =>
+        withNotification(current, `A categoria "${name}" não pode ser removida porque está em uso.`),
+      )
+      return
+    }
+
+    setData((current) => {
+      const budgets = { ...current.budgets }
+      delete budgets[name]
+      return {
+        ...withNotification(current, `Categoria removida: ${name}`),
+        categories: current.categories.filter((category) => category !== name),
+        budgets,
+      }
+    })
   }
 
   function exportCsv(type) {
@@ -418,6 +495,15 @@ function App() {
           setTheme={setTheme}
           setSidebarOpen={setSidebarOpen}
           notifications={data.notifications}
+          selectedMonth={selectedMonth}
+          setSelectedMonth={setSelectedMonth}
+          monthOptions={monthOptions}
+          clearNotifications={() =>
+            setData((current) => ({
+              ...current,
+              notifications: [],
+            }))
+          }
         />
 
         <AnimatePresence mode="wait">
@@ -432,7 +518,9 @@ function App() {
             {view === 'dashboard' && (
               <Dashboard
                 data={data}
+                filteredData={filteredData}
                 analytics={analytics}
+                selectedMonth={selectedMonth}
                 setModal={setModal}
                 markPaid={markPaid}
                 remove={remove}
@@ -445,7 +533,7 @@ function App() {
                 title="Gestão de despesas"
                 subtitle="Controle contas, assinaturas, parcelas, vencimentos e compromissos recorrentes."
                 type="expenses"
-                rows={filteredRows(data.expenses, query, categoryFilter)}
+                rows={filteredRows(filteredData.expenses, query, categoryFilter)}
                 categories={data.categories}
                 query={query}
                 setQuery={setQuery}
@@ -462,7 +550,7 @@ function App() {
                 title="Gestão de receitas"
                 subtitle="Organize renda extra, retornos de investimentos, projetos paralelos e entradas recorrentes."
                 type="incomes"
-                rows={filteredRows(data.incomes, query, categoryFilter)}
+                rows={filteredRows(filteredData.incomes, query, categoryFilter)}
                 categories={['Todos', ...data.categories]}
                 query={query}
                 setQuery={setQuery}
@@ -475,17 +563,18 @@ function App() {
             )}
             {view === 'salary' && <SalaryPanel salary={data.salary} updateSalary={updateSalary} />}
             {view === 'reports' && (
-              <Reports data={data} analytics={analytics} exportCsv={exportCsv} />
+              <Reports data={filteredData} analytics={analytics} exportCsv={exportCsv} />
             )}
             {view === 'goals' && (
               <Goals goals={data.goals} setModal={setModal} remove={remove} analytics={analytics} />
             )}
-            {view === 'calendar' && <CalendarView expenses={data.expenses} incomes={data.incomes} />}
+            {view === 'calendar' && <CalendarView expenses={filteredData.expenses} incomes={filteredData.incomes} />}
             {view === 'settings' && (
               <SettingsView
                 data={data}
                 setData={setData}
                 addCategory={addCategory}
+                removeCategory={removeCategory}
                 setTheme={setTheme}
                 theme={theme}
               />
@@ -503,11 +592,19 @@ function App() {
           <EditorModal
             modal={modal}
             categories={data.categories}
+            selectedMonth={selectedMonth}
             onClose={() => setModal(null)}
             onExpense={upsertExpense}
             onIncome={upsertIncome}
             onGoal={upsertGoal}
             onSalary={updateSalary}
+          />
+        )}
+        {pendingDelete && (
+          <ConfirmDeleteModal
+            pendingDelete={pendingDelete}
+            onCancel={() => setPendingDelete(null)}
+            onConfirm={confirmRemove}
           />
         )}
       </AnimatePresence>
@@ -568,9 +665,6 @@ function AuthScreen({ onAuth, theme, setTheme }) {
             <span>
               <LineChart size={17} /> Análises em tempo real
             </span>
-          </div>
-          <div className="auth-koala-orbit">
-            <HolographicKoala className="hero-koala" />
           </div>
         </motion.div>
       </section>
@@ -702,8 +796,22 @@ function Sidebar({ view, setView, open, setOpen, profile, logout }) {
   )
 }
 
-function Topbar({ view, profile, theme, setTheme, setSidebarOpen, notifications }) {
+function Topbar({
+  view,
+  profile,
+  theme,
+  setTheme,
+  setSidebarOpen,
+  notifications,
+  selectedMonth,
+  setSelectedMonth,
+  monthOptions,
+  clearNotifications,
+}) {
   const title = navItems.find((item) => item.id === view)?.label || 'Painel'
+  const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [monthOpen, setMonthOpen] = useState(false)
+
   return (
     <header className="topbar">
       <button className="icon-button menu-button" onClick={() => setSidebarOpen(true)} aria-label="Abrir menu">
@@ -714,21 +822,84 @@ function Topbar({ view, profile, theme, setTheme, setSidebarOpen, notifications 
         <h1>{title}</h1>
       </div>
       <div className="topbar-actions">
-        <button className="notify-button">
-          <Bell size={18} />
-          <span>{notifications.length}</span>
-        </button>
-        <button className="theme-chip" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
+        <div className="month-picker">
+          <button
+            type="button"
+            className="month-picker-trigger"
+            onClick={() => setMonthOpen((open) => !open)}
+            aria-label="Selecionar mês"
+          >
+            <CalendarDays size={16} />
+            <span>{formatMonthLabel(selectedMonth)}</span>
+            <ChevronDown className={clsx('month-chevron', monthOpen && 'open')} size={16} />
+          </button>
+          {monthOpen && (
+            <div className="month-menu">
+              {monthOptions.map((month) => (
+                <button
+                  key={month}
+                  type="button"
+                  className={clsx(month === selectedMonth && 'active')}
+                  onClick={() => {
+                    setSelectedMonth(month)
+                    setMonthOpen(false)
+                  }}
+                >
+                  <span>{formatMonthLabel(month)}</span>
+                  {month === selectedMonth && <Check size={15} />}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="notification-center">
+          <button
+            className="notify-button"
+            onClick={() => setNotificationsOpen((open) => !open)}
+            aria-label="Abrir notificações"
+          >
+            <Bell size={18} />
+          </button>
+          {notificationsOpen && (
+            <div className="notification-popover">
+              <div className="notification-popover-head">
+                <strong>Notificações</strong>
+                <span>{notifications.length}</span>
+              </div>
+              {!!notifications.length && (
+                <button className="clear-notifications" onClick={clearNotifications}>
+                  Limpar notificações
+                </button>
+              )}
+              <div className="notification-popover-list">
+                {notifications.length ? (
+                  notifications.map((item, index) => (
+                    <div key={`${item}-${index}`}>
+                      <Bell size={15} />
+                      <span>{item}</span>
+                    </div>
+                  ))
+                ) : (
+                  <p>Nenhuma notificação ainda.</p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+        <button
+          className="theme-chip icon-only"
+          onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+          aria-label={theme === 'dark' ? 'Ativar modo claro' : 'Ativar modo escuro'}
+        >
           {theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}
-          {theme === 'dark' ? 'Claro' : 'Escuro'}
         </button>
-        <div className="avatar">{initials(profile.name)}</div>
+        <HolographicKoala compact className="topbar-koala" />
       </div>
     </header>
   )
 }
 
-function Dashboard({ data, analytics, setModal, markPaid, remove, updateSalary, exportCsv }) {
+function Dashboard({ data, filteredData, analytics, selectedMonth, setModal, markPaid, remove, updateSalary, exportCsv }) {
   return (
     <div className="dashboard-grid">
       <section className="hero-panel">
@@ -768,8 +939,14 @@ function Dashboard({ data, analytics, setModal, markPaid, remove, updateSalary, 
         <div className="salary-summary">
           <div>
             <span>Valor atual</span>
-            <strong>{currency.format(data.salary.current)}</strong>
-            <p>{data.salary.recurring ? 'Recorrente mensal ativado' : 'Recorrência desativada'}</p>
+            <strong>{currency.format(filteredData.salary.current)}</strong>
+            <p>
+              {filteredData.salary.current
+                ? data.salary.recurring
+                  ? `Recorrente em ${formatMonthLabel(selectedMonth)}`
+                  : `Pagamento em ${formatDate(data.salary.nextPayment)}`
+                : `Sem salário em ${formatMonthLabel(selectedMonth)}`}
+            </p>
           </div>
           <button
             className="danger-action"
@@ -782,7 +959,7 @@ function Dashboard({ data, analytics, setModal, markPaid, remove, updateSalary, 
 
       <Panel className="chart-panel large" title="Evolução mensal" action={<button onClick={() => exportCsv('expenses')}><Download size={16} /> Exportar</button>}>
         <ResponsiveContainer width="100%" height={310}>
-          <AreaChart data={monthlyTrend}>
+          <AreaChart data={monthlyTrend} margin={{ top: 10, right: 18, left: 28, bottom: 0 }}>
             <defs>
               <linearGradient id="income" x1="0" x2="0" y1="0" y2="1">
                 <stop offset="5%" stopColor="#00c2a8" stopOpacity={0.45} />
@@ -795,7 +972,7 @@ function Dashboard({ data, analytics, setModal, markPaid, remove, updateSalary, 
             </defs>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
             <XAxis dataKey="month" stroke="var(--muted)" />
-            <YAxis stroke="var(--muted)" tickFormatter={(value) => compactCurrency.format(value)} />
+            <YAxis width={72} stroke="var(--muted)" tickFormatter={(value) => compactCurrency.format(value)} />
             <Tooltip content={<ChartTooltip />} />
             <Area type="monotone" dataKey="income" stroke="#00c2a8" fill="url(#income)" strokeWidth={3} />
             <Area type="monotone" dataKey="expenses" stroke="#ff5c8a" fill="url(#expenses)" strokeWidth={3} />
@@ -827,7 +1004,7 @@ function Dashboard({ data, analytics, setModal, markPaid, remove, updateSalary, 
 
       <Panel className="transactions-panel" title="Transações recentes" action={<button onClick={() => setModal({ type: 'expense' })}><Plus size={16} /> Adicionar</button>}>
         <div className="transaction-list">
-          {data.expenses.slice(0, 6).map((expense) => (
+          {filteredData.expenses.slice(0, 6).map((expense) => (
             <TransactionRow
               key={expense.id}
               item={expense}
@@ -841,8 +1018,8 @@ function Dashboard({ data, analytics, setModal, markPaid, remove, updateSalary, 
 
       <Panel title="Notificações inteligentes">
         <div className="notification-list">
-          {data.notifications.map((item) => (
-            <div key={item}>
+          {data.notifications.map((item, index) => (
+            <div key={`${item}-${index}`}>
               <Bell size={17} />
               <span>{item}</span>
             </div>
@@ -905,11 +1082,13 @@ function Ledger({
         </label>
         <label className="select-box">
           <Filter size={17} />
-          <select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
-            {(categories[0] === 'Todos' ? categories : ['Todos', ...categories]).map((category) => (
-              <option key={category}>{category}</option>
-            ))}
-          </select>
+          <CustomSelect
+            ariaLabel="Filtrar categoria"
+            className="toolbar-select"
+            value={categoryFilter}
+            options={categories[0] === 'Todos' ? categories : ['Todos', ...categories]}
+            onChange={setCategoryFilter}
+          />
         </label>
         <button onClick={() => exportCsv(type)}>
           <Download size={17} /> CSV
@@ -1000,10 +1179,10 @@ function SalaryPanel({ salary, updateSalary }) {
       </Panel>
       <Panel className="chart-panel large" title="Histórico salarial">
         <ResponsiveContainer width="100%" height={300}>
-          <BarChart data={salary.history}>
+          <BarChart data={salary.history} margin={{ top: 10, right: 18, left: 28, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
             <XAxis dataKey="month" stroke="var(--muted)" />
-            <YAxis stroke="var(--muted)" tickFormatter={(value) => compactCurrency.format(value)} />
+            <YAxis width={72} stroke="var(--muted)" tickFormatter={(value) => compactCurrency.format(value)} />
             <Tooltip content={<ChartTooltip />} />
             <Bar dataKey="amount" fill="#6c8cff" radius={[10, 10, 0, 0]} />
           </BarChart>
@@ -1035,10 +1214,10 @@ function Reports({ data, analytics, exportCsv }) {
       </section>
       <Panel className="chart-panel large" title="Receitas vs despesas">
         <ResponsiveContainer width="100%" height={320}>
-          <BarChart data={monthlyTrend}>
+          <BarChart data={monthlyTrend} margin={{ top: 10, right: 18, left: 28, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="var(--chart-grid)" />
             <XAxis dataKey="month" stroke="var(--muted)" />
-            <YAxis stroke="var(--muted)" tickFormatter={(value) => compactCurrency.format(value)} />
+            <YAxis width={72} stroke="var(--muted)" tickFormatter={(value) => compactCurrency.format(value)} />
             <Tooltip content={<ChartTooltip />} />
             <Bar dataKey="income" fill="#00c2a8" radius={[8, 8, 0, 0]} />
             <Bar dataKey="expenses" fill="#ff5c8a" radius={[8, 8, 0, 0]} />
@@ -1166,7 +1345,7 @@ function CalendarView({ expenses, incomes }) {
   )
 }
 
-function SettingsView({ data, setData, addCategory, theme, setTheme }) {
+function SettingsView({ data, setData, addCategory, removeCategory, theme, setTheme }) {
   const [category, setCategory] = useState('')
 
   return (
@@ -1192,7 +1371,12 @@ function SettingsView({ data, setData, addCategory, theme, setTheme }) {
       <Panel title="Categorias personalizadas">
         <div className="category-cloud">
           {data.categories.map((item) => (
-            <span key={item}>{item}</span>
+            <span key={item}>
+              {item}
+              <button onClick={() => removeCategory(item)} aria-label={`Remover categoria ${item}`}>
+                <X size={13} />
+              </button>
+            </span>
           ))}
         </div>
         <div className="inline-form">
@@ -1229,19 +1413,20 @@ function SettingsView({ data, setData, addCategory, theme, setTheme }) {
   )
 }
 
-function EditorModal({ modal, categories, onClose, onExpense, onIncome, onGoal, onSalary }) {
+function EditorModal({ modal, categories, selectedMonth, onClose, onExpense, onIncome, onGoal, onSalary }) {
   const isExpense = modal.type === 'expense'
   const isIncome = modal.type === 'income'
   const isGoal = modal.type === 'goal'
   const isSalary = modal.type === 'salary'
   const item = modal.item || {}
+  const defaultSelectedDate = getDefaultDateForMonth(selectedMonth)
   const [form, setForm] = useState(() => ({
     id: item.id,
     title: item.title || '',
     amount: item.amount || '',
     category: item.category || categories[0],
-    date: item.date || new Date().toISOString().slice(0, 10),
-    dueDate: item.dueDate || new Date().toISOString().slice(0, 10),
+    date: item.date || defaultSelectedDate,
+    dueDate: item.dueDate || defaultSelectedDate,
     paid: item.paid || false,
     recurring: item.recurring || false,
     installments: item.installments || 1,
@@ -1249,10 +1434,10 @@ function EditorModal({ modal, categories, onClose, onExpense, onIncome, onGoal, 
     name: item.name || '',
     target: item.target || '',
     saved: item.saved || '',
-    deadline: item.deadline || new Date().toISOString().slice(0, 10),
+    deadline: item.deadline || defaultSelectedDate,
     color: item.color || '#6c8cff',
     current: item.current ?? '',
-    nextPayment: item.nextPayment || new Date().toISOString().slice(0, 10),
+    nextPayment: isSalary ? defaultSelectedDate : item.nextPayment || defaultSelectedDate,
     salaryRecurring: item.recurring ?? true,
   }))
 
@@ -1265,7 +1450,8 @@ function EditorModal({ modal, categories, onClose, onExpense, onIncome, onGoal, 
     } else if (isGoal) {
       onGoal({ id: form.id, name: form.name, target: Number(form.target), saved: Number(form.saved), deadline: form.deadline, color: form.color })
     } else if (isSalary) {
-      onSalary({ current: Number(form.current), recurring: form.salaryRecurring, nextPayment: form.nextPayment })
+      const salaryValue = Number(form.current)
+      onSalary({ current: salaryValue, recurring: salaryValue > 0 ? form.salaryRecurring : false, nextPayment: form.nextPayment })
     }
     onClose()
   }
@@ -1334,11 +1520,12 @@ function EditorModal({ modal, categories, onClose, onExpense, onIncome, onGoal, 
               </label>
               <label>
                 Categoria
-                <select value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}>
-                  {categories.map((category) => (
-                    <option key={category}>{category}</option>
-                  ))}
-                </select>
+                <CustomSelect
+                  ariaLabel="Selecionar categoria"
+                  value={form.category}
+                  options={categories}
+                  onChange={(category) => setForm({ ...form, category })}
+                />
               </label>
               <label>
                 {isExpense ? 'Vencimento' : 'Data'}
@@ -1348,7 +1535,38 @@ function EditorModal({ modal, categories, onClose, onExpense, onIncome, onGoal, 
                 <>
                   <label>
                     Parcelas
-                    <input type="number" min="1" value={form.installments} onChange={(event) => setForm({ ...form, installments: event.target.value })} />
+                    <div className="stepper-field">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            installments: Math.max(1, Number(form.installments || 1) - 1),
+                          })
+                        }
+                        aria-label="Diminuir parcelas"
+                      >
+                        <Minus size={15} />
+                      </button>
+                      <input
+                        type="number"
+                        min="1"
+                        value={form.installments}
+                        onChange={(event) => setForm({ ...form, installments: event.target.value })}
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setForm({
+                            ...form,
+                            installments: Number(form.installments || 0) + 1,
+                          })
+                        }
+                        aria-label="Aumentar parcelas"
+                      >
+                        <Plus size={15} />
+                      </button>
+                    </div>
                   </label>
                   <label className="switch-row">
                     Recorrente mensal
@@ -1382,6 +1600,42 @@ function Panel({ title, action, className, children }) {
       </div>
       {children}
     </section>
+  )
+}
+
+function CustomSelect({ value, options, onChange, ariaLabel, className }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className={clsx('custom-select', className)}>
+      <button
+        type="button"
+        className="custom-select-trigger"
+        onClick={() => setOpen((current) => !current)}
+        aria-label={ariaLabel}
+      >
+        <span>{value}</span>
+        <ChevronDown className={clsx(open && 'open')} size={16} />
+      </button>
+      {open && (
+        <div className="custom-select-menu">
+          {options.map((option) => (
+            <button
+              key={option}
+              type="button"
+              className={clsx(option === value && 'active')}
+              onClick={() => {
+                onChange(option)
+                setOpen(false)
+              }}
+            >
+              <span>{option}</span>
+              {option === value && <Check size={15} />}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -1459,6 +1713,36 @@ function EmptyState({ title, text }) {
   )
 }
 
+function ConfirmDeleteModal({ pendingDelete, onCancel, onConfirm }) {
+  const label = getDeleteLabel(pendingDelete.type)
+  const name = pendingDelete.item?.title || pendingDelete.item?.name || 'registro'
+
+  return (
+    <motion.div className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+      <motion.div
+        className="confirm-card"
+        initial={{ opacity: 0, y: 18, scale: 0.96 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 12, scale: 0.96 }}
+      >
+        <div className="confirm-icon">
+          <Trash2 size={22} />
+        </div>
+        <h2>Excluir {label.toLowerCase()}?</h2>
+        <p>Você está prestes a excluir “{name}”. Essa ação não pode ser desfeita.</p>
+        <div className="confirm-actions">
+          <button type="button" onClick={onCancel}>
+            Cancelar
+          </button>
+          <button type="button" className="danger-action" onClick={onConfirm}>
+            Excluir
+          </button>
+        </div>
+      </motion.div>
+    </motion.div>
+  )
+}
+
 function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null
   return (
@@ -1471,6 +1755,96 @@ function ChartTooltip({ active, payload, label }) {
       ))}
     </div>
   )
+}
+
+function createInstallmentExpenses(expense, installments) {
+  return Array.from({ length: installments }, (_, index) => ({
+    ...expense,
+    id: crypto.randomUUID(),
+    dueDate: addMonths(expense.dueDate, index),
+    installments,
+    recurring: false,
+    title: `${expense.title} (${index + 1}/${installments})`,
+    note: [expense.note, `Parcela ${index + 1} de ${installments}`].filter(Boolean).join(' - '),
+  }))
+}
+
+function addMonths(date, count) {
+  const parsed = parseLocalDate(date)
+  parsed.setMonth(parsed.getMonth() + count)
+  return dateToInputValue(parsed)
+}
+
+function getCurrentMonthKey() {
+  return dateToInputValue(new Date()).slice(0, 7)
+}
+
+function getMonthKey(date) {
+  return dateToInputValue(parseLocalDate(date)).slice(0, 7)
+}
+
+function getMonthOptions(data) {
+  const months = new Set()
+  const current = parseLocalDate(`${getCurrentMonthKey()}-01`)
+
+  for (let index = 0; index <= 12; index += 1) {
+    months.add(dateToInputValue(addMonthsToDate(current, index)).slice(0, 7))
+  }
+
+  data.expenses.forEach((expense) => months.add(getMonthKey(expense.dueDate)))
+  data.incomes.forEach((income) => months.add(getMonthKey(income.date)))
+  if (data.salary.nextPayment) months.add(getMonthKey(data.salary.nextPayment))
+
+  return [...months].sort()
+}
+
+function formatMonthLabel(month) {
+  return new Intl.DateTimeFormat('pt-BR', {
+    month: 'long',
+    year: 'numeric',
+  }).format(parseLocalDate(`${month}-01`))
+}
+
+function getDataForMonth(data, month) {
+  const salaryApplies = data.salary.recurring || getMonthKey(data.salary.nextPayment) === month
+
+  return {
+    ...data,
+    salary: {
+      ...data.salary,
+      current: salaryApplies ? data.salary.current : 0,
+    },
+    expenses: data.expenses.filter((expense) => getMonthKey(expense.dueDate) === month),
+    incomes: data.incomes.filter((income) => getMonthKey(income.date) === month),
+  }
+}
+
+function getDefaultDateForMonth(month) {
+  const today = new Date()
+  const [year, monthIndex] = month.split('-').map(Number)
+  const lastDay = new Date(year, monthIndex, 0).getDate()
+  const day = Math.min(today.getDate(), lastDay)
+
+  return dateToInputValue(new Date(year, monthIndex - 1, day))
+}
+
+function addMonthsToDate(date, count) {
+  const next = new Date(date)
+  next.setMonth(next.getMonth() + count)
+  return next
+}
+
+function dateToInputValue(date) {
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+function getDeleteLabel(type) {
+  if (type === 'expenses') return 'Despesa'
+  if (type === 'incomes') return 'Receita'
+  return 'Meta'
 }
 
 function getAnalytics(data) {
