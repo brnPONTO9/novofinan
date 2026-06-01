@@ -1,16 +1,48 @@
-# React + Vite
+# 🐨 Koala — Gestão Financeira Pessoal
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Koala é um aplicativo web de gestão financeira pessoal, gratuito e acessível para todos. Desenvolvido com foco na simplicidade, ele ajuda qualquer pessoa a organizar suas finanças no dia a dia.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 🚀 Sobre o Projeto
 
-## React Compiler
+O Koala nasceu da ideia de democratizar o controle financeiro. Com uma interface limpa e intuitiva, o app reúne as principais funcionalidades de gestão financeira em um só lugar — sem custos, sem barreiras.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+---
 
-## Expanding the ESLint configuration
+## ✨ Funcionalidades
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+- 📊 Controle de receitas e despesas
+- 🎯 Definição de metas financeiras
+- 📈 Relatórios e resumos financeiros
+- 💸 Acompanhamento de gastos
+- 🔓 Acesso gratuito para todos os usuários
+
+---
+
+## 🛠️ Tecnologias Utilizadas
+
+- [ReactJS](https://react.dev/)
+- [Vite](https://vitejs.dev/)
+- HTML5
+- CSS3
+- JavaScript (ES6+)
+
+---
+
+## 🌐 Acesso
+
+O app está publicado e disponível gratuitamente. Basta acessar pelo navegador, sem necessidade de instalação.
+
+---
+
+## 👨‍💻 Autores
+
+- **Bruno da Silva Lopes**
+- **Guilherme dos Santos**
+
+---
+
+## 📄 Licença
+
+Este projeto é de uso livre e gratuito para todos os usuários.
